@@ -4,5 +4,5 @@ from core.views import returns_api
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("returns/", returns_api),
+    path("api/returns/", returns_api),
 ]
