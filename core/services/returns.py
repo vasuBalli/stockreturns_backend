@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import datetime
 from core.models import CorporateAction
-from core.services.price_provider import get_close_price
+from core.services.price_resolver import get_stock_price
 
 
 def calculate_portfolio_return(
@@ -16,9 +16,13 @@ def calculate_portfolio_return(
     shares = Decimal(str(initial_shares))
     cash = Decimal("0")
 
-    # Prices
-    start_price = Decimal(str(get_close_price(symbol, start_date)))
-    end_price = Decimal(str(get_close_price(symbol, end_date)))
+    # Prices (NSE → Yahoo fallback handled inside resolver)
+    start_price = Decimal(
+        str(get_stock_price(symbol, start_date.strftime("%Y-%m-%d")))
+    )
+    end_price = Decimal(
+        str(get_stock_price(symbol, end_date.strftime("%Y-%m-%d")))
+    )
 
     initial_value = shares * start_price
 
@@ -32,7 +36,7 @@ def calculate_portfolio_return(
 
     for action in actions:
 
-        # ✅ SPLIT / BONUS
+        # SPLIT / BONUS → affects shares only
         if action.action_type in ("SPLIT", "BONUS") and action.factor:
             old_shares = shares
             shares *= Decimal(action.factor)
@@ -45,23 +49,37 @@ def calculate_portfolio_return(
                 "shares_after": float(shares),
             })
 
-        # ✅ DIVIDEND (CASH ONLY)
+        # DIVIDEND → CASH ONLY
         elif action.action_type == "DIVIDEND" and action.cash_value is not None:
-            dividend_per_share = Decimal(action.cash_value)
-            dividend_cash = shares * dividend_per_share
+            dividend_cash = shares * Decimal(action.cash_value)
             cash += dividend_cash
 
             action_log.append({
                 "date": action.ex_date,
                 "type": "DIVIDEND_CASH",
-                "dividend_per_share": float(dividend_per_share),
+                "dividend_per_share": float(action.cash_value),
                 "cash_received": float(dividend_cash),
                 "total_cash": float(cash),
             })
 
-    final_value = shares * end_price + cash
-    gain = final_value - initial_value
-    gain_pct = (gain / initial_value) * 100
+    # -------------------------
+    # 🔹 CLEAN FINANCIAL METRICS
+    # -------------------------
+
+    # Price-only gain (NO dividends)
+    price_gain = (end_price - start_price) * shares
+    price_gain_pct = (
+        (end_price - start_price) / start_price
+    ) * 100
+
+    # Dividend-only gain
+    dividend_gain = cash
+
+    # Total gain = price gain + dividends
+    total_gain = price_gain + dividend_gain
+    total_gain_pct = (total_gain / initial_value) * 100
+
+    final_value = initial_value + total_gain
 
     return {
         "symbol": symbol,
@@ -75,11 +93,19 @@ def calculate_portfolio_return(
         "end_price": float(end_price),
 
         "initial_value": float(initial_value),
-        "final_value": float(final_value),
 
-        "cash_balance": float(cash),
-        "total_gain": float(gain),
-        "gain_pct": float(gain_pct),
+        # ✅ PRICE-ONLY
+        "price_gain": float(price_gain),
+        "price_gain_pct": float(price_gain_pct),
+
+        # ✅ DIVIDENDS (SEPARATE)
+        "dividend_gain": float(dividend_gain),
+
+        # ✅ TOTAL (EXPLICIT)
+        "total_gain": float(total_gain),
+        "total_gain_pct": float(total_gain_pct),
+
+        "final_value": float(final_value),
 
         "corporate_actions": action_log,
     }
